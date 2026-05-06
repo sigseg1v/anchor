@@ -222,6 +222,7 @@ func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
 			client.room.broadcastAllClientState()
 			client.sendRoomState()
 			client.sendSceneAuthoritiesSnapshot()
+			client.sendRupeesSnapshot()
 		} else {
 			client.handlePacket(packet)
 		}

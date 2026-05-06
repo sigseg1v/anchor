@@ -59,6 +59,27 @@ func (c *Client) handlePacket(packet string) {
 		c.server.gameCompleteCount.Add(1)
 	}
 
+	if packetType == "UPDATE_RUPEES" {
+		delta := gjson.Get(packet, "delta").Int()
+		seed := gjson.Get(packet, "seed").Int()
+		total := c.room.applyRupeesDelta(delta, seed)
+		out, _ := sjson.Set(`{"type":"RUPEES_SET"}`, "total", total)
+		c.room.broadcastPacketAll(out)
+		return
+	}
+
+	if packetType == "FOLIAGE_DESTROY" {
+		sceneNum := gjson.Get(packet, "sceneNum").Int()
+		foliageId := gjson.Get(packet, "foliageId").String()
+		if foliageId == "" {
+			return
+		}
+		if c.room.addDestroyedFoliage(sceneNum, foliageId) {
+			c.room.broadcastPacket(packet)
+		}
+		return
+	}
+
 	targetClientId := gjson.Get(packet, "targetClientId")
 
 	if targetClientId.Exists() {
@@ -194,6 +215,40 @@ func (c *Client) disconnect() {
 	if c.room != nil {
 		c.room.onClientDisconnect(c.id)
 	}
+}
+
+// sendRupeesSnapshot sends the current room rupee total to a
+// (re)connecting client. Skips the send until at least one client has
+// seeded the room -- before that, the joiner's own first delta is
+// what bootstraps the count, and pushing 0 here would clobber their
+// save-loaded balance back to zero.
+func (c *Client) sendRupeesSnapshot() {
+	if c.conn == nil || c.room == nil {
+		return
+	}
+	total, ok := c.room.snapshotRupees()
+	if !ok {
+		return
+	}
+	packet, _ := sjson.Set(`{"type":"RUPEES_SET"}`, "total", total)
+	c.sendPacket(packet)
+}
+
+// sendFoliageSnapshotForScene sends the destroyed-foliage set for one
+// scene, packaged as a single FOLIAGE_SNAPSHOT packet. Called when
+// the client transitions into a scene so the arriving client can hide
+// previously cut grass on entry.
+func (c *Client) sendFoliageSnapshotForScene(sceneNum int64) {
+	if c.conn == nil || c.room == nil {
+		return
+	}
+	ids := c.room.snapshotFoliageForScene(sceneNum)
+	if ids == nil {
+		return
+	}
+	packet, _ := sjson.Set(`{"type":"FOLIAGE_SNAPSHOT"}`, "sceneNum", sceneNum)
+	packet, _ = sjson.Set(packet, "foliageIds", ids)
+	c.sendPacket(packet)
 }
 
 // sendSceneAuthoritiesSnapshot sends the room's current per-scene

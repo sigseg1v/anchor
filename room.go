@@ -32,6 +32,28 @@ type Room struct {
 	// concurrent UPDATE_CLIENT_STATE handlers.
 	sceneAuthorities map[int64]uint64
 	authMu           sync.Mutex
+
+	// Shared room rupee count. The first connected client seeds it
+	// from their save (rupeesInitialized = true on first
+	// UPDATE_RUPEES delta we accept) and from then on every client's
+	// pickups/spends adjust this single value, which the server
+	// broadcasts back as RUPEES_SET. Old anchor builds simply ignore
+	// the new packet types, and clients without the matching
+	// feature flag never produce them, so the room defaults to 0.
+	rupees            int64
+	rupeesInitialized bool
+	rupeesMu          sync.Mutex
+
+	// Per-scene foliage destruction set. Key is sceneNum (int64),
+	// value is the set of foliage IDs (string of "actorId:params:x:y:z")
+	// destroyed in that scene. Clients send FOLIAGE_DESTROY when they
+	// cut a foliage actor; the server adds to the set and broadcasts
+	// to the room so other peers in the same scene can kill the
+	// matching actor. When a client transitions into a scene we send
+	// them a FOLIAGE_SNAPSHOT of the set so they can hide already-
+	// destroyed foliage on entry.
+	foliageDestroyed map[int64]map[string]bool
+	foliageMu        sync.Mutex
 }
 
 func NewRoom(id string, ownerClientId uint64, packet string) *Room {
@@ -43,6 +65,7 @@ func NewRoom(id string, ownerClientId uint64, packet string) *Room {
 		teams:            sync.Map{},
 		state:            roomState,
 		sceneAuthorities: make(map[int64]uint64),
+		foliageDestroyed: make(map[int64]map[string]bool),
 	}
 }
 
@@ -214,6 +237,9 @@ func (r *Room) onClientSceneTransition(client *Client, oldScene, newScene int64)
 			r.sceneAuthorities[newScene] = client.id
 			r.sendSceneAuthorityPacket(newScene, client.id)
 		}
+		// Hand off the destroyed-foliage set for this scene so the
+		// arriving client hides anything previously cut.
+		go client.sendFoliageSnapshotForScene(newScene)
 	}
 }
 
@@ -240,6 +266,75 @@ func (r *Room) onClientDisconnect(clientId uint64) {
 			r.sendSceneAuthorityPacket(sceneNum, next)
 		}
 	}
+}
+
+// applyRupeesDelta updates the shared room rupee count by `delta` (which
+// may be negative), seeds the count on first call from the originator's
+// pre-change wallet (carried in `baseline` so the room starts at the
+// joiner's existing balance instead of 0), and returns the new total.
+// `seed` is the client's pre-delta local wallet -- used only the very
+// first time we see a delta in this room. Caller broadcasts the result.
+func (r *Room) applyRupeesDelta(delta int64, seed int64) int64 {
+	r.rupeesMu.Lock()
+	defer r.rupeesMu.Unlock()
+	if !r.rupeesInitialized {
+		// First contact wins: take the joiner's pre-delta balance as
+		// the room baseline so we don't start fresh rooms at 0 if a
+		// client connects mid-run.
+		r.rupees = seed
+		r.rupeesInitialized = true
+	}
+	r.rupees += delta
+	if r.rupees < 0 {
+		r.rupees = 0
+	}
+	return r.rupees
+}
+
+// snapshotRupees returns the current room rupee total and whether it
+// has been seeded yet. New connections receive RUPEES_SET only after
+// the room is initialized; before that, joiners contribute their own
+// wallet via the first UPDATE_RUPEES delta.
+func (r *Room) snapshotRupees() (int64, bool) {
+	r.rupeesMu.Lock()
+	defer r.rupeesMu.Unlock()
+	return r.rupees, r.rupeesInitialized
+}
+
+// addDestroyedFoliage records a foliage cut and returns true if this
+// is the first time we've seen this id (so the caller knows whether
+// to broadcast). De-duping at the server avoids fanning out the same
+// destroy to every peer when two clients independently cut the same
+// piece of grass during a brief authority handoff.
+func (r *Room) addDestroyedFoliage(sceneNum int64, foliageId string) bool {
+	r.foliageMu.Lock()
+	defer r.foliageMu.Unlock()
+	set, ok := r.foliageDestroyed[sceneNum]
+	if !ok {
+		set = make(map[string]bool)
+		r.foliageDestroyed[sceneNum] = set
+	}
+	if set[foliageId] {
+		return false
+	}
+	set[foliageId] = true
+	return true
+}
+
+// snapshotFoliageForScene returns a copy of destroyed foliage ids for
+// the given scene, or nil if nothing is recorded.
+func (r *Room) snapshotFoliageForScene(sceneNum int64) []string {
+	r.foliageMu.Lock()
+	defer r.foliageMu.Unlock()
+	set, ok := r.foliageDestroyed[sceneNum]
+	if !ok || len(set) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // snapshotSceneAuthorities returns a copy of the current authority map
