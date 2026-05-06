@@ -17,6 +17,7 @@ type Client struct {
 	room         *Room
 	team         *Team
 	state        string     // Client state, current scene, etc.
+	sceneNum     int64      // last-observed scene; sceneIdNone if no save loaded. Read-locked under mu.
 	mu           sync.Mutex // Mutex for safely updating state
 	lastActivity time.Time
 }
@@ -31,14 +32,27 @@ func (c *Client) handlePacket(packet string) {
 	}
 
 	if packetType == "UPDATE_CLIENT_STATE" {
+		newSaveLoaded := gjson.Get(packet, "state.isSaveLoaded").Bool()
+		newSceneRaw := gjson.Get(packet, "state.sceneNum").Int()
+		newScene := sceneIdNone
+		if newSaveLoaded {
+			newScene = newSceneRaw
+		}
+
 		c.mu.Lock()
 		c.state = gjson.Get(packet, "state").Raw
 		c.state, _ = sjson.Set(c.state, "clientId", c.id)
+		oldScene := c.sceneNum
+		c.sceneNum = newScene
 		c.mu.Unlock()
 
 		team := c.room.findOrCreateTeam(gjson.Get(packet, "state.teamId").String())
 
 		c.team = team
+
+		if oldScene != newScene {
+			c.room.onClientSceneTransition(c, oldScene, newScene)
+		}
 	}
 
 	if packetType == "GAME_COMPLETE" {
@@ -172,9 +186,29 @@ func (c *Client) disconnect() {
 	c.state, _ = sjson.Set(c.state, "online", false)
 	c.state, _ = sjson.Set(c.state, "isSaveLoaded", false)
 	c.conn = nil
+	c.sceneNum = sceneIdNone
 	c.mu.Unlock()
 
 	c.server.onlineClients.Delete(c.id)
+
+	if c.room != nil {
+		c.room.onClientDisconnect(c.id)
+	}
+}
+
+// sendSceneAuthoritiesSnapshot sends the room's current per-scene
+// authority assignments so a (re)connecting client can populate its
+// local map without waiting for elections triggered by other peers.
+func (c *Client) sendSceneAuthoritiesSnapshot() {
+	if c.conn == nil || c.room == nil {
+		return
+	}
+	snap := c.room.snapshotSceneAuthorities()
+	for sceneNum, authId := range snap {
+		packet, _ := sjson.Set(`{"type":"SCENE_AUTHORITY"}`, "sceneNum", sceneNum)
+		packet, _ = sjson.Set(packet, "authorityClientId", authId)
+		c.sendPacket(packet)
+	}
 }
 
 func (c *Client) sendRoomState() {

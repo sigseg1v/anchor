@@ -221,6 +221,7 @@ func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
 			log.Printf("Client %v Connected\n", client.id)
 			client.room.broadcastAllClientState()
 			client.sendRoomState()
+			client.sendSceneAuthoritiesSnapshot()
 		} else {
 			client.handlePacket(packet)
 		}
@@ -274,6 +275,7 @@ func (s *Server) findOrCreateClient(packet string, conn net.Conn) *Client {
 			room:         room,
 			team:         team,
 			state:        clientState,
+			sceneNum:     sceneIdNone,
 			lastActivity: time.Now(),
 		}
 		room.clients.Store(clientId, client)
