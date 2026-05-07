@@ -80,6 +80,18 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	if packetType == "ROCK_DESTROY" {
+		sceneNum := gjson.Get(packet, "sceneNum").Int()
+		rockId := gjson.Get(packet, "rockId").String()
+		if rockId == "" {
+			return
+		}
+		if c.room.addDestroyedRock(sceneNum, rockId) {
+			c.room.broadcastPacket(packet)
+		}
+		return
+	}
+
 	targetClientId := gjson.Get(packet, "targetClientId")
 
 	if targetClientId.Exists() {
@@ -248,6 +260,22 @@ func (c *Client) sendFoliageSnapshotForScene(sceneNum int64) {
 	}
 	packet, _ := sjson.Set(`{"type":"FOLIAGE_SNAPSHOT"}`, "sceneNum", sceneNum)
 	packet, _ = sjson.Set(packet, "foliageIds", ids)
+	c.sendPacket(packet)
+}
+
+// sendRockSnapshotForScene mirrors sendFoliageSnapshotForScene for
+// rocks: hands a (re)connecting / scene-entering client the set of
+// rocks already smashed in that scene so they can hide them on entry.
+func (c *Client) sendRockSnapshotForScene(sceneNum int64) {
+	if c.conn == nil || c.room == nil {
+		return
+	}
+	ids := c.room.snapshotRocksForScene(sceneNum)
+	if ids == nil {
+		return
+	}
+	packet, _ := sjson.Set(`{"type":"ROCK_SNAPSHOT"}`, "sceneNum", sceneNum)
+	packet, _ = sjson.Set(packet, "rockIds", ids)
 	c.sendPacket(packet)
 }
 

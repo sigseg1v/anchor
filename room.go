@@ -54,6 +54,14 @@ type Room struct {
 	// destroyed foliage on entry.
 	foliageDestroyed map[int64]map[string]bool
 	foliageMu        sync.Mutex
+
+	// Per-scene destroyed-rock set. Same encoding/lifecycle as
+	// foliageDestroyed but for liftable/breakable rocks (currently
+	// ACTOR_EN_ISHI). Clients send ROCK_DESTROY when a rock smashes
+	// locally; the server records and rebroadcasts, and ROCK_SNAPSHOT
+	// hands the set to clients on scene entry.
+	rockDestroyed map[int64]map[string]bool
+	rockMu        sync.Mutex
 }
 
 func NewRoom(id string, ownerClientId uint64, packet string) *Room {
@@ -66,6 +74,7 @@ func NewRoom(id string, ownerClientId uint64, packet string) *Room {
 		state:            roomState,
 		sceneAuthorities: make(map[int64]uint64),
 		foliageDestroyed: make(map[int64]map[string]bool),
+		rockDestroyed:    make(map[int64]map[string]bool),
 	}
 }
 
@@ -240,6 +249,8 @@ func (r *Room) onClientSceneTransition(client *Client, oldScene, newScene int64)
 		// Hand off the destroyed-foliage set for this scene so the
 		// arriving client hides anything previously cut.
 		go client.sendFoliageSnapshotForScene(newScene)
+		// Same for already-smashed rocks.
+		go client.sendRockSnapshotForScene(newScene)
 	}
 }
 
@@ -327,6 +338,39 @@ func (r *Room) snapshotFoliageForScene(sceneNum int64) []string {
 	r.foliageMu.Lock()
 	defer r.foliageMu.Unlock()
 	set, ok := r.foliageDestroyed[sceneNum]
+	if !ok || len(set) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// addDestroyedRock mirrors addDestroyedFoliage for rock actors. Returns
+// true on first insertion so the caller knows whether to broadcast.
+func (r *Room) addDestroyedRock(sceneNum int64, rockId string) bool {
+	r.rockMu.Lock()
+	defer r.rockMu.Unlock()
+	set, ok := r.rockDestroyed[sceneNum]
+	if !ok {
+		set = make(map[string]bool)
+		r.rockDestroyed[sceneNum] = set
+	}
+	if set[rockId] {
+		return false
+	}
+	set[rockId] = true
+	return true
+}
+
+// snapshotRocksForScene returns a copy of destroyed rock ids for the
+// given scene, or nil if nothing is recorded.
+func (r *Room) snapshotRocksForScene(sceneNum int64) []string {
+	r.rockMu.Lock()
+	defer r.rockMu.Unlock()
+	set, ok := r.rockDestroyed[sceneNum]
 	if !ok || len(set) == 0 {
 		return nil
 	}
