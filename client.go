@@ -92,6 +92,34 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	// ROCK_LIFT shares the same destroyed-rocks dedup set as ROCK_DESTROY:
+	// once a rock id appears in any of the two, it stays "gone" for the
+	// rest of the room. The two packets are distinct on the wire so peers
+	// can render the held-rock overhead visual on lift and clear it on
+	// destroy. ROCK_SNAPSHOT only carries the merged set; new joiners just
+	// hide everything and miss any in-flight held-rock visual until the
+	// next lift event.
+	if packetType == "ROCK_LIFT" {
+		sceneNum := gjson.Get(packet, "sceneNum").Int()
+		rockId := gjson.Get(packet, "rockId").String()
+		if rockId == "" {
+			return
+		}
+		if c.room.addDestroyedRock(sceneNum, rockId) {
+			c.room.broadcastPacket(packet)
+		}
+		return
+	}
+
+	// ITEM_SPAWN replicates collectible drops (currently from rock smashes).
+	// The originating client sends with the actual rolled item params so
+	// every peer ends up with the same drop type at the same position; we
+	// just relay without state.
+	if packetType == "ITEM_SPAWN" {
+		c.room.broadcastPacket(packet)
+		return
+	}
+
 	targetClientId := gjson.Get(packet, "targetClientId")
 
 	if targetClientId.Exists() {
