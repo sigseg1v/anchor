@@ -80,25 +80,26 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	// ROCK_DESTROY always broadcasts. The set membership is just so that
+	// joiners learn about destroyed rocks via ROCK_SNAPSHOT, but a destroy
+	// after a lift still needs to reach peers so they can clear the held
+	// overhead visual on the originator's dummy player. Receivers handle
+	// destroying an already-killed rock idempotently.
 	if packetType == "ROCK_DESTROY" {
 		sceneNum := gjson.Get(packet, "sceneNum").Int()
 		rockId := gjson.Get(packet, "rockId").String()
 		if rockId == "" {
 			return
 		}
-		if c.room.addDestroyedRock(sceneNum, rockId) {
-			c.room.broadcastPacket(packet)
-		}
+		c.room.addDestroyedRock(sceneNum, rockId)
+		c.room.broadcastPacket(packet)
 		return
 	}
 
-	// ROCK_LIFT shares the same destroyed-rocks dedup set as ROCK_DESTROY:
-	// once a rock id appears in any of the two, it stays "gone" for the
-	// rest of the room. The two packets are distinct on the wire so peers
-	// can render the held-rock overhead visual on lift and clear it on
-	// destroy. ROCK_SNAPSHOT only carries the merged set; new joiners just
-	// hide everything and miss any in-flight held-rock visual until the
-	// next lift event.
+	// ROCK_LIFT goes into the same destroyed-rocks set as ROCK_DESTROY so
+	// joiners get a unified ROCK_SNAPSHOT. We dedup the lift broadcast
+	// itself (a rock can only be lifted once) but a later DESTROY for the
+	// same rockId still broadcasts -- see the ROCK_DESTROY branch above.
 	if packetType == "ROCK_LIFT" {
 		sceneNum := gjson.Get(packet, "sceneNum").Int()
 		rockId := gjson.Get(packet, "rockId").String()
