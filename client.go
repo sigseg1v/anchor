@@ -121,6 +121,15 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	// ITEM_COLLECT despawns a previously-spawned EnItem00 across peers
+	// (player picked it up, or its lifetime timer ran out). Stateless
+	// relay; spawned items are ephemeral so no server-side bookkeeping
+	// is needed for joiners (anything still alive will time out).
+	if packetType == "ITEM_COLLECT" {
+		c.room.broadcastPacket(packet)
+		return
+	}
+
 	targetClientId := gjson.Get(packet, "targetClientId")
 
 	if targetClientId.Exists() {
