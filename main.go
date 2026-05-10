@@ -14,7 +14,14 @@ import (
 	"syscall"
 )
 
+// gitHash is overwritten at build time via -ldflags "-X main.gitHash=..."
+// so the running anchor binary reports the source commit it was built
+// from. Helps catch the "I forgot to pull / rebuild" trap when the
+// dev machine and the run host get out of sync.
+var gitHash = "unknown"
+
 func main() {
+	log.Printf("Anchor server build: gitHash=%s", gitHash)
 	server := NewServer()
 
 	errChan := make(chan error)
