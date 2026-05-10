@@ -242,9 +242,33 @@ func (r *Room) onClientSceneTransition(client *Client, oldScene, newScene int64)
 	// becomes authority. Otherwise the existing authority stays --
 	// "first to enter" wins, and re-entries do not steal authority.
 	if newScene != sceneIdNone {
-		if _, ok := r.sceneAuthorities[newScene]; !ok {
+		currentAuth, hasAuth := r.sceneAuthorities[newScene]
+		if !hasAuth {
 			r.sceneAuthorities[newScene] = client.id
 			r.sendSceneAuthorityPacket(newScene, client.id)
+		} else {
+			// Echo the existing authority back to the entering
+			// client so they don't have to fall back to the "default
+			// to self-authority" path while waiting on a broadcast
+			// that's not coming. Without this, two clients entering
+			// the same scene roughly simultaneously would each
+			// assume authority and double-broadcast initial enemy
+			// spawns.
+			packet, _ := sjson.Set(`{"type":"SCENE_AUTHORITY"}`, "sceneNum", newScene)
+			packet, _ = sjson.Set(packet, "authorityClientId", currentAuth)
+			go client.sendPacket(packet)
+			// Tell the existing authority that a peer just joined
+			// their scene so it can push an ENEMY_FULL_SNAPSHOT to
+			// the new arrival. Skip when the entering client *is*
+			// the authority (a no-op).
+			if currentAuth != client.id {
+				if value, ok := r.clients.Load(currentAuth); ok {
+					authClient := value.(*Client)
+					notify, _ := sjson.Set(`{"type":"PEER_ENTERED_SCENE"}`, "sceneNum", newScene)
+					notify, _ = sjson.Set(notify, "peerClientId", client.id)
+					go authClient.sendPacket(notify)
+				}
+			}
 		}
 		// Hand off the destroyed-foliage set for this scene so the
 		// arriving client hides anything previously cut.
