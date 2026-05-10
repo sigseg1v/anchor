@@ -178,6 +178,7 @@ func (r *Room) broadcastPacketAll(packet string) {
 // announcement. authorityClientId == 0 means "no current authority"
 // (everyone has left the scene).
 func (r *Room) sendSceneAuthorityPacket(sceneNum int64, authorityClientId uint64) {
+	log.Printf("[diag] sendSceneAuthorityPacket sceneNum=%d authorityClientId=%d", sceneNum, authorityClientId)
 	packet, _ := sjson.Set(`{"type":"SCENE_AUTHORITY"}`, "sceneNum", sceneNum)
 	packet, _ = sjson.Set(packet, "authorityClientId", authorityClientId)
 	r.broadcastPacketAll(packet)
@@ -217,6 +218,7 @@ func (r *Room) electSceneAuthority(sceneNum int64, exclude uint64) uint64 {
 // scene (sceneIdNone for "no scene") AFTER updating the client's stored
 // scene/state so re-elections see the post-transition truth.
 func (r *Room) onClientSceneTransition(client *Client, oldScene, newScene int64) {
+	log.Printf("[diag] onClientSceneTransition client=%d oldScene=%d newScene=%d", client.id, oldScene, newScene)
 	if oldScene == newScene {
 		return
 	}
@@ -312,6 +314,8 @@ func (r *Room) onClientDisconnect(clientId uint64) {
 func (r *Room) applyRupeesDelta(delta int64, seed int64) int64 {
 	r.rupeesMu.Lock()
 	defer r.rupeesMu.Unlock()
+	wasInitialized := r.rupeesInitialized
+	prev := r.rupees
 	if !r.rupeesInitialized {
 		// First contact wins: take the joiner's pre-delta balance as
 		// the room baseline so we don't start fresh rooms at 0 if a
@@ -323,6 +327,7 @@ func (r *Room) applyRupeesDelta(delta int64, seed int64) int64 {
 	if r.rupees < 0 {
 		r.rupees = 0
 	}
+	log.Printf("[diag] applyRupeesDelta delta=%d seed=%d wasInitialized=%v prev=%d new=%d", delta, seed, wasInitialized, prev, r.rupees)
 	return r.rupees
 }
 

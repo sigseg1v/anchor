@@ -46,6 +46,9 @@ func (c *Client) handlePacket(packet string) {
 		c.sceneNum = newScene
 		c.mu.Unlock()
 
+		log.Printf("[diag] UPDATE_CLIENT_STATE client=%d isSaveLoaded=%v rawScene=%d -> newScene=%d (oldScene=%d)",
+			c.id, newSaveLoaded, newSceneRaw, newScene, oldScene)
+
 		team := c.room.findOrCreateTeam(gjson.Get(packet, "state.teamId").String())
 
 		c.team = team
