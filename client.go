@@ -130,6 +130,17 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	// SIGN_CUT and TORCH_STATE are stateless world-event relays
+	// (FEATURE_WORLD_EVENT_SYNC). The originator broadcasts on local
+	// chop / litTimer-edge; we just fan out to peers in the room. No
+	// snapshot for late joiners -- switch-flag persistence and the
+	// fact that signs respawn on player distance both make
+	// per-actor server bookkeeping low-value here.
+	if packetType == "SIGN_CUT" || packetType == "TORCH_STATE" {
+		c.room.broadcastPacket(packet)
+		return
+	}
+
 	targetClientId := gjson.Get(packet, "targetClientId")
 
 	if targetClientId.Exists() {
