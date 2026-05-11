@@ -158,6 +158,50 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	// MECHANIC_STATE diagnostics. We do not consume the packet here;
+	// it falls through to the generic relay path below. The block
+	// only emits log instrumentation:
+	//   - Per-room counter, summarised every ~30s by
+	//     mechanicRelayHeartbeat.
+	//   - A first-packet line per (clientId, sceneNum) pair so we can
+	//     see clients coming online without spamming every tick.
+	//   - A "rejected" warning if the sender hasn't advertised
+	//     mechanic_sync_v1 in its clientState.features array, which
+	//     would indicate a misconfigured peer. The warning is
+	//     diagnostic only; routing is unchanged.
+	// All output respects quietMode.
+	if packetType == "MECHANIC_STATE" {
+		if !c.server.quietMode.Load() {
+			c.mu.Lock()
+			state := c.state
+			c.mu.Unlock()
+
+			hasFeature := false
+			gjson.Get(state, "features").ForEach(func(_, value gjson.Result) bool {
+				if value.String() == "mechanic_sync_v1" {
+					hasFeature = true
+					return false
+				}
+				return true
+			})
+
+			if !hasFeature {
+				log.Printf("[diag] MECHANIC_STATE rejected: clientId=%d missing mechanic_sync_v1", c.id)
+			}
+
+			sceneNum := gjson.Get(packet, "sceneNum").Int()
+			if c.server.shouldLogMechanicFirstPacket(c.id, sceneNum) {
+				mechanicCount := gjson.Get(packet, "mechanics.#").Int()
+				log.Printf("[diag] MECHANIC_STATE from clientId=%d sceneNum=%d mechanicCount=%d",
+					c.id, sceneNum, mechanicCount)
+			}
+
+			if c.room != nil {
+				c.server.incrementMechanicRelayCount(c.room.id)
+			}
+		}
+	}
+
 	targetClientId := gjson.Get(packet, "targetClientId")
 
 	if targetClientId.Exists() {

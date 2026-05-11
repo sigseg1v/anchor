@@ -28,6 +28,17 @@ type Server struct {
 	rooms             sync.Map
 	gameCompleteCount atomic.Uint64
 	nextClientId      atomic.Uint64
+
+	// MECHANIC_STATE diagnostics. mechanicRelayCounts maps roomId
+	// (string) to a *atomic.Uint64 of relays since the last periodic
+	// log (reset to 0 after each log). mechanicLastSeenPair maps
+	// clientId (uint64) to the last sceneNum (int64) we logged a
+	// first-packet diag line for, so we only emit one log per
+	// (clientId, sceneNum) transition rather than every ~67ms tick.
+	// Both are read-mostly with infrequent writes, so sync.Map keeps
+	// things lock-free on the hot path.
+	mechanicRelayCounts  sync.Map
+	mechanicLastSeenPair sync.Map
 }
 
 func NewServer() *Server {
@@ -51,6 +62,7 @@ func (s *Server) Start(errChan chan error) {
 	go s.heartbeat(errChan)
 	go s.parseStats(errChan)
 	go s.statsHeartbeat(errChan)
+	go s.mechanicRelayHeartbeat(errChan)
 
 	log.Println("Server running on :43383")
 
@@ -297,6 +309,58 @@ func (s *Server) findOrCreateRoom(packet string, clientId uint64) *Room {
 	}
 
 	return room.(*Room)
+}
+
+// mechanicRelayHeartbeat periodically drains the per-room MECHANIC_STATE
+// relay counters and logs a single line per room with a non-zero count.
+// Zero-count rooms are skipped entirely so an idle server is quiet.
+// Counter is reset (swapped to 0) atomically when read, so we don't
+// race with concurrent increments in the packet path.
+func (s *Server) mechanicRelayHeartbeat(errChan chan error) {
+	ticker := time.NewTicker(HEARTBEAT)
+	defer ticker.Stop()
+	defer func() {
+		if r := recover(); r != nil {
+			errChan <- fmt.Errorf("panic in mechanicRelayHeartbeat: %v", r)
+		}
+	}()
+
+	for range ticker.C {
+		if s.quietMode.Load() {
+			continue
+		}
+		s.mechanicRelayCounts.Range(func(key, value interface{}) bool {
+			counter := value.(*atomic.Uint64)
+			count := counter.Swap(0)
+			if count > 0 {
+				log.Printf("[diag] MECHANIC_STATE relay roomId=%v count=%d", key, count)
+			}
+			return true
+		})
+	}
+}
+
+// incrementMechanicRelayCount bumps the per-room MECHANIC_STATE relay
+// counter. Lazily creates the counter on first use.
+func (s *Server) incrementMechanicRelayCount(roomId string) {
+	value, ok := s.mechanicRelayCounts.Load(roomId)
+	if !ok {
+		value, _ = s.mechanicRelayCounts.LoadOrStore(roomId, &atomic.Uint64{})
+	}
+	value.(*atomic.Uint64).Add(1)
+}
+
+// shouldLogMechanicFirstPacket returns true if this is the first
+// MECHANIC_STATE we've seen from (clientId, sceneNum) since the pair
+// last changed for that client. Stores the new pair on a positive
+// answer so subsequent identical packets are suppressed.
+func (s *Server) shouldLogMechanicFirstPacket(clientId uint64, sceneNum int64) bool {
+	prev, ok := s.mechanicLastSeenPair.Load(clientId)
+	if ok && prev.(int64) == sceneNum {
+		return false
+	}
+	s.mechanicLastSeenPair.Store(clientId, sceneNum)
+	return true
 }
 
 func splitNullByte(data []byte, atEOF bool) (advance int, token []byte, err error) {
