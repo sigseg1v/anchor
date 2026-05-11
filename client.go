@@ -83,6 +83,20 @@ func (c *Client) handlePacket(packet string) {
 		return
 	}
 
+	// FOLIAGE_REGROW must clear the id from the per-scene destroyed set;
+	// otherwise the next FOLIAGE_DESTROY for the same shrub is swallowed
+	// by the addDestroyedFoliage de-dup and never reaches peers.
+	if packetType == "FOLIAGE_REGROW" {
+		sceneNum := gjson.Get(packet, "sceneNum").Int()
+		foliageId := gjson.Get(packet, "foliageId").String()
+		if foliageId == "" {
+			return
+		}
+		c.room.removeDestroyedFoliage(sceneNum, foliageId)
+		c.room.broadcastPacket(packet)
+		return
+	}
+
 	// ROCK_DESTROY always broadcasts. The set membership is just so that
 	// joiners learn about destroyed rocks via ROCK_SNAPSHOT, but a destroy
 	// after a lift still needs to reach peers so they can clear the held

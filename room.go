@@ -361,6 +361,20 @@ func (r *Room) addDestroyedFoliage(sceneNum int64, foliageId string) bool {
 	return true
 }
 
+// removeDestroyedFoliage drops a foliage id from the per-scene set on
+// regrow, so a subsequent FOLIAGE_DESTROY for the same id (after the
+// shrub is cut again) is treated as a new event and re-broadcast
+// rather than swallowed by the addDestroyedFoliage de-dup.
+func (r *Room) removeDestroyedFoliage(sceneNum int64, foliageId string) {
+	r.foliageMu.Lock()
+	defer r.foliageMu.Unlock()
+	set, ok := r.foliageDestroyed[sceneNum]
+	if !ok {
+		return
+	}
+	delete(set, foliageId)
+}
+
 // snapshotFoliageForScene returns a copy of destroyed foliage ids for
 // the given scene, or nil if nothing is recorded.
 func (r *Room) snapshotFoliageForScene(sceneNum int64) []string {
